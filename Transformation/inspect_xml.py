@@ -8,100 +8,113 @@ from io import BytesIO
 from dotenv import load_dotenv
 
 
-# 1. Charger la configuration
-load_dotenv()
+def display_tree(element, level=0):
+    """Affiche récursivement la structure d'un élément XML."""
 
-account_id = os.getenv("R2_ACCOUNT_ID")
-access_key = os.getenv("R2_ACCESS_KEY_ID")
-secret_key = os.getenv("R2_SECRET_ACCESS_KEY")
-bucket_name = os.getenv("R2_BUCKET_NAME")
+    indentation = "  " * level
 
-if not all([account_id, access_key, secret_key, bucket_name]):
-    raise ValueError("Configuration R2 incomplète. Vérifie ton fichier .env.")
+    print(
+        f"{indentation}{element.tag} "
+        f"| Attributs : {element.attrib} "
+        f"| Texte : {(element.text or '').strip()}"
+    )
 
-
-# 2. Créer le client R2
-s3 = boto3.client(
-    "s3",
-    endpoint_url=f"https://{account_id}.r2.cloudflarestorage.com",
-    aws_access_key_id=access_key,
-    aws_secret_access_key=secret_key,
-    region_name="auto",
-)
+    for child in element:
+        display_tree(child, level + 1)
 
 
-# 3. Télécharger l'archive depuis R2 en mémoire
-object_name = "bronze/2026/11/19/prix-carburants.zip"
+def inspect_xml():
 
-print("Téléchargement de l'archive depuis R2...")
+    # 1. Charger les variables d'environnement
+    load_dotenv()
 
-response = s3.get_object(
-    Bucket=bucket_name,
-    Key=object_name
-)
+    account_id = os.getenv("R2_ACCOUNT_ID")
+    access_key = os.getenv("R2_ACCESS_KEY_ID")
+    secret_key = os.getenv("R2_SECRET_ACCESS_KEY")
+    bucket_name = os.getenv("R2_BUCKET_NAME")
 
-zip_data = BytesIO(response["Body"].read())
+    if not all([account_id, access_key, secret_key, bucket_name]):
+        raise ValueError("Configuration R2 incomplète. Vérifie ton fichier .env.")
 
-print("Archive téléchargée.")
+    # 2. Créer le client R2
+    s3 = boto3.client(
+        "s3",
+        endpoint_url=f"https://{account_id}.r2.cloudflarestorage.com",
+        aws_access_key_id=access_key,
+        aws_secret_access_key=secret_key,
+        region_name="auto",
+    )
 
+    # 3. Télécharger l'archive depuis R2
+    object_name = "bronze/2026/11/19/prix-carburants.zip"
 
-# 4. Examiner le contenu du ZIP
-with zipfile.ZipFile(zip_data) as archive:
+    print("Téléchargement de l'archive depuis R2...")
 
-    files = archive.namelist()
+    response = s3.get_object(
+        Bucket=bucket_name,
+        Key=object_name
+    )
 
-    print("\nFichiers présents dans l'archive :")
-    for file in files:
-        print("-", file)
+    zip_data = BytesIO(response["Body"].read())
 
-    xml_files = [
-        file for file in files
-        if file.lower().endswith(".xml")
-    ]
+    print("Archive téléchargée.")
 
-    if not xml_files:
-        raise ValueError("Aucun fichier XML trouvé dans l'archive.")
+    # 4. Examiner le contenu du ZIP
+    with zipfile.ZipFile(zip_data) as archive:
 
-    xml_file = xml_files[0]
+        files = archive.namelist()
 
-    print(f"\nInspection du fichier XML : {xml_file}")
+        print("\nFichiers présents dans l'archive :")
 
-    # 5. Lire la structure du XML
-    with archive.open(xml_file) as xml:
+        for file in files:
+            print("-", file)
 
-        depth = 0
-        records_found = 0
+        xml_files = [
+            file for file in files
+            if file.lower().endswith(".xml")
+        ]
 
-        for event, element in ET.iterparse(xml, events=("start", "end")):
+        if not xml_files:
+            raise ValueError("Aucun fichier XML trouvé dans l'archive.")
 
-            if event == "start":
-                depth += 1
+        xml_file = xml_files[0]
 
-                if depth == 1:
-                    print("\nÉlément racine :", element.tag)
-                    print("Attributs :", element.attrib)
+        print(f"\nInspection du fichier XML : {xml_file}")
 
-                elif depth == 2 and records_found < 2:
-                    print(f"\nExemple d'enregistrement : {element.tag}")
-                    print("Attributs :", element.attrib)
+        
 
-            else:
-                if depth == 2 and records_found < 2:
-                    print("Sous-éléments :")
+        
+        # Rechercher des horaires détaillés dans tout le XML
+        found = 0
 
-                    for child in element:
-                        print(
-                            f"  - {child.tag} | "
-                            f"Attributs : {child.attrib} | "
-                            f"Valeur : {child.text}"
-                        )
+        with archive.open(xml_file) as xml:
+            for event, element in ET.iterparse(xml, events=("end",)):
 
-                    records_found += 1
+                if element.tag == "pdv":
+
+                    jours = element.findall("./horaires/jour")
+
+                    jours_detailles = [
+                        jour for jour in jours if len(jour) > 0
+                    ]
+
+                    if jours_detailles:
+                        print("\nStation :", element.get("id"))
+                        print("Ville :", element.findtext("ville"))
+
+                        for jour in jours_detailles:
+                            display_tree(jour)
+
+                        found += 1
+
+                        if found == 3:
+                            break
+
                     element.clear()
 
-                depth -= 1
+        if found == 0:
+            print("Aucun horaire détaillé trouvé dans cet échantillon.")
 
-            if records_found >= 2:
-                break
 
-print("\nInspection terminée.")
+if __name__ == "__main__":
+    inspect_xml()
